@@ -16,14 +16,23 @@ from diffusers.models.modeling_utils import ModelMixin
 import torch.nn as nn
 import torch
 import math
-from flash_attn import flash_attn_interface
+try:
+    from flash_attn import flash_attn_interface
+    FLASH_ATTN_AVAILABLE = True
+except ImportError:
+    flash_attn_interface = None
+    FLASH_ATTN_AVAILABLE = False
 import torch.distributed as dist
 
 # wan 1.3B model has a weird channel / head configurations and require max-autotune to work with flexattention
 # see https://github.com/pytorch/pytorch/issues/133254
 # change to default for other models
-flex_attention = torch.compile(
-    flex_attention, dynamic=False, mode="max-autotune")
+try:
+    flex_attention = torch.compile(
+        flex_attention, dynamic=False, mode="max-autotune")
+except Exception:
+    # torch.compile may fail on Windows without a C++ compiler; use eager fallback
+    pass
 
 
 def causal_rope_apply(x, grid_sizes, freqs, start_frame=0):
@@ -200,12 +209,29 @@ class CausalWanSelfAttention(nn.Module):
             
             seq_lens = torch.tensor(seq_lens, dtype=torch.int32, device=roped_query.device)
 
-            x = flash_attn_interface.flash_attn_with_kvcache(
-                q=roped_query,
-                k_cache=kv_cache["k"][:, :seq_lens.max()],
-                v_cache=kv_cache["v"][:, :seq_lens.max()],
-                cache_seqlens=seq_lens,
-            )
+            if FLASH_ATTN_AVAILABLE:
+                x = flash_attn_interface.flash_attn_with_kvcache(
+                    q=roped_query,
+                    k_cache=kv_cache["k"][:, :seq_lens.max()],
+                    v_cache=kv_cache["v"][:, :seq_lens.max()],
+                    cache_seqlens=seq_lens,
+                )
+            else:
+                # Fallback: gather cached KV up to each sequence length and use SDPA
+                max_len = seq_lens.max().item()
+                k_for_attn = kv_cache["k"][:, :max_len]
+                v_for_attn = kv_cache["v"][:, :max_len]
+                # SDPA expects (B, num_heads, seq_len, head_dim)
+                q_sdpa = roped_query.transpose(1, 2)
+                k_sdpa = k_for_attn.transpose(1, 2)
+                v_sdpa = v_for_attn.transpose(1, 2)
+                # Build a causal-style mask: each query attends to keys up to its cache_seqlen
+                seq_range = torch.arange(max_len, device=roped_query.device).unsqueeze(0)
+                attn_mask = seq_range < seq_lens.unsqueeze(1)  # (B, max_len)
+                attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)  # (B, 1, 1, max_len)
+                x = torch.nn.functional.scaled_dot_product_attention(
+                    q_sdpa, k_sdpa, v_sdpa, attn_mask=attn_mask
+                ).transpose(1, 2)  # back to (B, seq, heads, dim)
 
         # output
         x = x.flatten(2)

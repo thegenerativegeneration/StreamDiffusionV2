@@ -1,0 +1,23 @@
+StreamDiffusionV2 - Real-Time Streaming Video Generation
+=========================================================
+
+IMPORTANT: After installation, you must complete TWO additional steps:
+
+Step 1: Setup Environment
+  Run "Setup Environment" from the Start Menu.
+  This downloads and installs ~2.5 GB of Python packages (PyTorch, CUDA, etc.).
+  Requires an internet connection. May take 10-30 minutes depending on speed.
+
+Step 2: Download Models
+  Run "Download Models" from the Start Menu.
+  Choose between:
+    - 1.3B model (~5 GB download, requires 8+ GB VRAM)
+    - 14B model (~30 GB download, requires 24+ GB VRAM)
+
+After both steps are complete, use "Launch Web UI" to start the application.
+
+Requirements:
+  - NVIDIA GPU with 8+ GB VRAM (RTX 3060 or better recommended)
+  - NVIDIA driver version 550 or newer
+  - Internet connection for setup
+  - 10-40 GB free disk space (depending on model choice)
